@@ -1,6 +1,6 @@
 # api/app.py
 """
-FastAPI service for housing price prediction.
+FastAPI service for Titanic survival prediction.
 Loads the trained model and exposes a /predict endpoint.
 """
 
@@ -9,29 +9,21 @@ from typing import Any, Dict, List
 
 import joblib
 import pandas as pd
+import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-
-# Import shared pipeline components so unpickling works
-from housing_pipeline import (
-    ClusterSimilarity,
-    column_ratio,
-    ratio_name,
-    build_preprocessing,
-    make_estimator_for_name,
-)
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-MODEL_PATH = Path("/app/models/global_best_model_optuna.pkl")
+MODEL_PATH = Path("/app/models/05_RandomForest_PCA-False_Tuning-False.pkl")
 
 app = FastAPI(
-    title="Housing Price Prediction API",
-    description="FastAPI service for predicting California housing prices",
+    title="Titanic Survival Prediction API",
+    description="FastAPI service for predicting Titanic passenger survival",
     version="1.0.0",
 )
-
 
 # -----------------------------------------------------------------------------
 # Load model at startup
@@ -45,10 +37,7 @@ def load_model(path: Path):
     m = joblib.load(path)
     print("✓ Model loaded successfully!")
     print(f"  Model type: {type(m).__name__}")
-    if hasattr(m, "named_steps"):
-        print(f"  Pipeline steps: {list(m.named_steps.keys())}")
     return m
-
 
 try:
     model = load_model(MODEL_PATH)
@@ -57,14 +46,11 @@ except Exception as e:
     print(f"  Error: {e}")
     raise RuntimeError(f"Failed to load model: {e}")
 
-
 # -----------------------------------------------------------------------------
 # Request / Response Schemas
 # -----------------------------------------------------------------------------
 class PredictRequest(BaseModel):
-    """
-    Prediction request with list of instances (dicts of features).
-    """
+    """Prediction request with passenger information."""
     instances: List[Dict[str, Any]]
 
     class Config:
@@ -72,33 +58,31 @@ class PredictRequest(BaseModel):
             "example": {
                 "instances": [
                     {
-                        "longitude": -122.23,
-                        "latitude": 37.88,
-                        "housing_median_age": 41.0,
-                        "total_rooms": 880.0,
-                        "total_bedrooms": 129.0,
-                        "population": 322.0,
-                        "households": 126.0,
-                        "median_income": 8.3252,
-                        "ocean_proximity": "NEAR BAY",
+                        "pclass": 3,
+                        "sex": "male",
+                        "age": 22.0,
+                        "siblings_spouses": 1,
+                        "parents_children": 0,
+                        "fare": 7.25,
+                        "port_code": "S"
                     }
                 ]
             }
         }
 
-
 class PredictResponse(BaseModel):
-    predictions: List[float]
+    predictions: List[str]
+    probabilities: List[float]
     count: int
 
     class Config:
         schema_extra = {
             "example": {
-                "predictions": [452600.0],
-                "count": 1,
+                "predictions": ["Died", "Survived"],
+                "probabilities": [0.23, 0.87],
+                "count": 2
             }
         }
-
 
 # -----------------------------------------------------------------------------
 # Routes
@@ -106,15 +90,16 @@ class PredictResponse(BaseModel):
 @app.get("/")
 def root():
     return {
-        "name": "Housing Price Prediction API",
+        "name": "Titanic Survival Prediction API",
         "version": "1.0.0",
+        "model": "RandomForest",
+        "f1_score": 0.7385,
         "endpoints": {
             "health": "/health",
             "predict": "/predict",
-            "docs": "/docs",
-        },
+            "docs": "/docs"
+        }
     }
-
 
 @app.get("/health")
 def health() -> Dict[str, str]:
@@ -122,15 +107,15 @@ def health() -> Dict[str, str]:
         "status": "healthy",
         "model_loaded": str(model is not None),
         "model_path": str(MODEL_PATH),
+        "model_type": "RandomForest Classifier"
     }
-
 
 @app.post("/predict", response_model=PredictResponse)
 def predict(request: PredictRequest):
     if not request.instances:
         raise HTTPException(
             status_code=400,
-            detail="No instances provided. Please provide at least one instance.",
+            detail="No instances provided."
         )
 
     try:
@@ -138,45 +123,64 @@ def predict(request: PredictRequest):
     except Exception as e:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid input format. Could not convert to DataFrame: {e}",
+            detail=f"Invalid input format: {e}"
         )
 
-    required_columns = [
-        "longitude",
-        "latitude",
-        "housing_median_age",
-        "total_rooms",
-        "total_bedrooms",
-        "population",
-        "households",
-        "median_income",
-        "ocean_proximity",
-    ]
+    required_columns = ["pclass", "sex", "age", "siblings_spouses", 
+                       "parents_children", "fare", "port_code"]
     missing = set(required_columns) - set(X.columns)
     if missing:
         raise HTTPException(
             status_code=400,
-            detail=f"Missing required columns: {sorted(missing)}",
+            detail=f"Missing required columns: {sorted(missing)}"
         )
 
     try:
-        preds = model.predict(X)
+        # Encode sex
+        le_sex = LabelEncoder()
+        le_sex.fit(['male', 'female'])
+        X['sex_encoded'] = le_sex.transform(X['sex'])
+        
+        # Encode port
+        le_port = LabelEncoder()
+        le_port.fit(['C', 'Q', 'S'])
+        X['port_encoded'] = le_port.transform(X['port_code'])
+        
+        # Select features in correct order
+        feature_columns = ['age', 'pclass', 'fare', 'siblings_spouses', 
+                          'parents_children', 'sex_encoded', 'port_encoded']
+        X_features = X[feature_columns]
+        
+        # Scale features
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X_features)
+        
+        # Predict
+        preds = model.predict(X_scaled)
+        probs = model.predict_proba(X_scaled)[:, 1]
+        
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Model prediction failed: {e}",
+            detail=f"Prediction failed: {e}"
         )
 
-    preds_list = [float(p) for p in preds]
+    # Convert to readable labels
+    pred_labels = ["Survived" if p == 1 else "Died" for p in preds]
+    prob_list = [float(p) for p in probs]
 
-    return PredictResponse(predictions=preds_list, count=len(preds_list))
-
+    return PredictResponse(
+        predictions=pred_labels,
+        probabilities=prob_list,
+        count=len(pred_labels)
+    )
 
 @app.on_event("startup")
 async def startup_event():
     print("\n" + "=" * 80)
-    print("Housing Price Prediction API - Starting Up")
+    print("Titanic Survival Prediction API - Starting Up")
     print("=" * 80)
+    print(f"Model: RandomForest (Best F1-Score: 0.7385)")
     print(f"Model path: {MODEL_PATH}")
     print(f"Model loaded: {model is not None}")
     print("API is ready to accept requests!")

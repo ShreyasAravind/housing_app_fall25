@@ -1,191 +1,180 @@
-import json
-import os
-from pathlib import Path
-from typing import Any, Dict
+# streamlit/app.py
+"""
+Streamlit frontend for Titanic Survival Prediction.
+"""
 
-import requests
 import streamlit as st
+import requests
+import json
 
-# -----------------------------------------------------------------------------
-# MUST be the first Streamlit command
-# -----------------------------------------------------------------------------
-st.set_page_config(page_title="Housing Prediction", page_icon="🏠", layout="centered")
+# Configuration
+API_URL = "http://api:8000"
 
-# -----------------------------------------------------------------------------
-# Config
-# -----------------------------------------------------------------------------
-SCHEMA_PATH = Path("/app/data/data_schema.json")
-
-# API_URL is set in docker-compose environment
-API_BASE_URL = os.getenv("API_URL", "http://localhost:8000")
-PREDICT_ENDPOINT = f"{API_BASE_URL}/predict"
-
-# -----------------------------------------------------------------------------
-# Load schema from JSON file
-# -----------------------------------------------------------------------------
-@st.cache_resource
-def load_schema(path: Path) -> Dict[str, Any]:
-    if not path.exists():
-        raise FileNotFoundError(f"Schema file not found: {path}")
-    with open(path, "r") as f:
-        return json.load(f)
-
-
-schema = load_schema(SCHEMA_PATH)
-
-numerical_features = schema.get("numerical", {})
-categorical_features = schema.get("categorical", {})
-
-# -----------------------------------------------------------------------------
-# Streamlit UI
-# -----------------------------------------------------------------------------
-st.title("🏠 Housing Prediction App")
-st.write(
-    f"This app sends your inputs to the FastAPI backend at **{API_BASE_URL}** for prediction."
+st.set_page_config(
+    page_title="Titanic Survival Predictor",
+    page_icon="🚢",
+    layout="wide"
 )
 
-st.header("Input Features")
+# Header
+st.title("🚢 Titanic Survival Prediction")
+st.markdown("### Will you survive the Titanic?")
+st.markdown("---")
 
-user_input: Dict[str, Any] = {}
-
-# -----------------------------------------------------------------------------
-# Numerical Features
-# -----------------------------------------------------------------------------
-st.subheader("Numerical Features")
-
-# Decide which features use sliders
-SLIDER_FEATURES = {"longitude", "latitude", "housing_median_age", "median_income"}
-
-for feature_name, stats in numerical_features.items():
-    min_val = float(stats.get("min", 0.0))
-    max_val = float(stats.get("max", 1000.0))
-    mean_val = float(stats.get("mean", (min_val + max_val) / 2))
-    median_val = float(stats.get("median", mean_val))
-
-    # Use median as default
-    default_val = median_val
-
-    label = feature_name.replace("_", " ").title()
-    help_text = (
-        f"Min: {min_val:.2f}, Max: {max_val:.2f}, "
-        f"Mean: {mean_val:.2f}, Median: {median_val:.2f}"
-    )
-
-    if feature_name in SLIDER_FEATURES:
-        # Determine step size based on range and semantics
-        if feature_name in {"housing_median_age"}:
-            step = 1.0  # age in years, int-like
-        elif feature_name in {"median_income"}:
-            step = 0.1  # more granular
-        else:
-            # generic heuristic for latitude/longitude
-            step = 0.01
-
-        user_input[feature_name] = st.slider(
-            label,
-            min_value=min_val,
-            max_value=max_val,
-            value=float(default_val),
-            step=step,
-            help=help_text,
-            key=feature_name,
-        )
-    else:
-        # Fallback to number_input for wide-range features
-        range_val = max_val - min_val
-        if range_val > 10000:
-            step = 10.0
-        elif range_val > 1000:
-            step = 5.0
-        elif range_val > 100:
-            step = 1.0
-        elif range_val > 10:
-            step = 0.1
-        else:
-            step = 0.01
-
-        user_input[feature_name] = st.number_input(
-            label,
-            min_value=min_val,
-            max_value=max_val,
-            value=float(default_val),
-            step=step,
-            help=help_text,
-            key=feature_name,
-        )
-# -----------------------------------------------------------------------------
-# Categorical Features
-# -----------------------------------------------------------------------------
-st.subheader("Categorical Features")
-
-for feature_name, info in categorical_features.items():
-    unique_values = info.get("unique_values", [])
-    value_counts = info.get("value_counts", {})
-
-    if not unique_values:
-        continue
-
-    # Default to the most common value
-    if value_counts:
-        default_value = max(value_counts, key=value_counts.get)
-    else:
-        default_value = unique_values[0]
-
+# Sidebar with info
+with st.sidebar:
+    st.header("ℹ️ About")
+    st.markdown("""
+    This app predicts whether a passenger would survive the Titanic disaster.
+    
+    **Model:** Random Forest  
+    **F1-Score:** 0.7385  
+    **Accuracy:** 81.01%
+    
+    Enter passenger information and click **Predict Survival** to see the result!
+    """)
+    
+    st.markdown("---")
+    st.markdown("### 📊 Model Info")
+    
+    # Check API health
     try:
-        default_idx = unique_values.index(default_value)
-    except ValueError:
-        default_idx = 0
+        health_response = requests.get(f"{API_URL}/health", timeout=2)
+        if health_response.status_code == 200:
+            st.success("✅ API Connected")
+        else:
+            st.error("❌ API Error")
+    except:
+        st.error("❌ API Offline")
 
-    label = feature_name.replace("_", " ").title()
+# Main form
+col1, col2 = st.columns(2)
 
-    user_input[feature_name] = st.selectbox(
-        label,
-        options=unique_values,
-        index=default_idx,
-        key=feature_name,
-        help=f"Distribution: {value_counts}",
+with col1:
+    st.subheader("👤 Passenger Information")
+    
+    name = st.text_input("Passenger Name", value="John Doe", help="For display only")
+    
+    pclass = st.selectbox(
+        "Ticket Class",
+        options=[1, 2, 3],
+        format_func=lambda x: f"Class {x} ({'1st' if x==1 else '2nd' if x==2 else '3rd'})",
+        help="1 = First Class, 2 = Second Class, 3 = Third Class"
+    )
+    
+    sex = st.radio("Sex", options=["male", "female"], horizontal=True)
+    
+    age = st.slider("Age", min_value=0, max_value=80, value=30, step=1)
+
+with col2:
+    st.subheader("👨‍👩‍👧‍👦 Family & Fare")
+    
+    siblings_spouses = st.number_input(
+        "Siblings/Spouses Aboard",
+        min_value=0,
+        max_value=8,
+        value=0,
+        help="Number of siblings or spouses aboard"
+    )
+    
+    parents_children = st.number_input(
+        "Parents/Children Aboard",
+        min_value=0,
+        max_value=6,
+        value=0,
+        help="Number of parents or children aboard"
+    )
+    
+    fare = st.number_input(
+        "Fare Paid (£)",
+        min_value=0.0,
+        max_value=500.0,
+        value=32.0,
+        step=0.5,
+        help="Ticket fare in British Pounds"
+    )
+    
+    port_code = st.selectbox(
+        "Port of Embarkation",
+        options=["S", "C", "Q"],
+        format_func=lambda x: {"S": "Southampton", "C": "Cherbourg", "Q": "Queenstown"}[x]
     )
 
+# Predict button
 st.markdown("---")
 
-# -----------------------------------------------------------------------------
-# Predict Button
-# -----------------------------------------------------------------------------
-if st.button("🔮 Predict", type="primary"):
-    payload = {"instances": [user_input]}
-
-    with st.spinner("Calling API for prediction..."):
+if st.button("🔮 Predict Survival", type="primary", use_container_width=True):
+    # Prepare request
+    payload = {
+        "instances": [
+            {
+                "pclass": int(pclass),
+                "sex": sex,
+                "age": float(age),
+                "siblings_spouses": int(siblings_spouses),
+                "parents_children": int(parents_children),
+                "fare": float(fare),
+                "port_code": port_code
+            }
+        ]
+    }
+    
+    # Make prediction
+    with st.spinner("🔮 Predicting..."):
         try:
-            resp = requests.post(PREDICT_ENDPOINT, json=payload, timeout=30)
-        except requests.exceptions.RequestException as e:
-            st.error(f"❌ Request to API failed: {e}")
-        else:
-            if resp.status_code != 200:
-                st.error(f"❌ API error: HTTP {resp.status_code} - {resp.text}")
-            else:
-                data = resp.json()
-                preds = data.get("predictions", [])
-
-                if not preds:
-                    st.warning("⚠️ No predictions returned from API.")
-                else:
-                    pred = preds[0]
-                    st.success("✅ Prediction successful!")
-
-                    st.subheader("Prediction Result")
-
-                    # Display prediction with nice formatting
-                    if isinstance(pred, (int, float)):
-                        st.metric(label="Predicted Value", value=f"{pred:,.2f}")
+            response = requests.post(
+                f"{API_URL}/predict",
+                json=payload,
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                prediction = result["predictions"][0]
+                probability = result["probabilities"][0]
+                
+                st.markdown("---")
+                st.markdown("## 🎯 Prediction Result")
+                
+                col1, col2, col3 = st.columns([1, 2, 1])
+                
+                with col2:
+                    if prediction == "Survived":
+                        st.success(f"### ✅ {name} would have **SURVIVED!**")
+                        st.metric(
+                            "Survival Probability",
+                            f"{probability*100:.1f}%",
+                            delta=f"{(probability-0.5)*100:.1f}% vs average"
+                        )
+                        st.balloons()
                     else:
-                        st.metric(label="Predicted Class", value=str(pred))
+                        st.error(f"### ❌ {name} would **NOT** have survived")
+                        st.metric(
+                            "Survival Probability",
+                            f"{probability*100:.1f}%",
+                            delta=f"{(probability-0.5)*100:.1f}% vs average"
+                        )
+                
+                # Show input summary
+                with st.expander("📋 Input Summary"):
+                    st.json(payload["instances"][0])
+                
+            else:
+                st.error(f"❌ API Error: {response.status_code}")
+                st.json(response.json())
+                
+        except requests.exceptions.Timeout:
+            st.error("⏱️ Request timed out. Please try again.")
+        except requests.exceptions.ConnectionError:
+            st.error("🔌 Could not connect to API. Is the service running?")
+        except Exception as e:
+            st.error(f"❌ Error: {str(e)}")
 
-                    # Show input summary in expander
-                    with st.expander("📋 View Input Summary"):
-                        st.json(user_input)
-
+# Footer
 st.markdown("---")
-st.caption(
-    f"📁 Schema: `{SCHEMA_PATH}`  \n"
-    f"🌐 API: `{API_BASE_URL}`"
-)
+st.markdown("""
+<div style='text-align: center; color: gray;'>
+    <p>Titanic Survival Prediction | ML Model: Random Forest | F1-Score: 0.7385</p>
+    <p>Built with FastAPI + Streamlit | Deployed on DigitalOcean</p>
+</div>
+""", unsafe_allow_html=True)
